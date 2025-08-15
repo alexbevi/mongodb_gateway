@@ -231,17 +231,6 @@ Run with extra verbosity (already default), adjust redactions and command suppre
 
 ---
 
-## License
-
-Choose your preferred license (e.g., MIT) and add a `LICENSE` file.
-Example header:
-
-```text
-MIT License – (c) 2025 Alex Bevilacqua
-```
-
----
-
 ## Disclaimer
 
 This project is intended for experimentation, debugging, and education.
