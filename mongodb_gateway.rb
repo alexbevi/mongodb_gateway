@@ -426,54 +426,7 @@ class SessionMap
   end
 end
 
-class MonitorCache
-  # Coalesces concurrent hello/ismaster requests and caches with TTL.
-  def initialize(ttl_seconds: 5)
-    @ttl       = ttl_seconds
-    @doc       = nil
-    @ts        = Time.at(0)
-    @inflight  = false
-    @mu        = Mutex.new
-    @cv        = ConditionVariable.new
-    @last_err  = nil
-  end
 
-  # Returns [doc, :fresh|:cached]
-  def fetch(upstream)
-    now = Time.now
-    @mu.synchronize do
-      if @doc && (now - @ts) < @ttl
-        return [deep_dup_bson(@doc), :cached]
-      end
-      if @inflight
-        @cv.wait(@mu)
-        if @doc && (Time.now - @ts) < @ttl
-          return [deep_dup_bson(@doc), :cached]
-        end
-        raise @last_err if @last_err
-      end
-      @inflight = true
-    end
-
-    fresh = upstream.use('admin').database.command(BSON::Document.new({'hello' => 1})).first
-
-    @mu.synchronize do
-      @doc = fresh
-      @ts  = Time.now
-      @last_err = nil
-      @inflight = false
-      @cv.broadcast
-      [deep_dup_bson(@doc), :fresh]
-    end
-  rescue => e
-    @mu.synchronize do
-      @last_err = e
-      @inflight = false
-      @cv.broadcast
-    end
-    raise
-  end
-end
 
 # ===== Fingerprinting / hello / errors =======================================
 
@@ -598,7 +551,7 @@ end
 def start_gateway!(opts, log)
   upstream       = Mongo::Client.new(opts.upstream_uri, server_api: { version: '1' })
   session_map    = SessionMap.new(upstream)
-  monitor_cache  = MonitorCache.new # default 5s TTL
+
 
   server  = TCPServer.new(opts.listen_host, opts.listen_port)
   server.close_on_exec = true if server.respond_to?(:close_on_exec=)
@@ -658,7 +611,7 @@ def start_gateway!(opts, log)
 
       th = Thread.new(sock) do |s|
         begin
-          handle_connection(s, upstream, session_map, monitor_cache, opts, log)
+          handle_connection(s, upstream, session_map, opts, log)
         rescue => e
           log.error "connection error: #{e.class}: #{e.message}"
         ensure
@@ -704,7 +657,7 @@ def redacted_command?(name, opts)
   opts.redact_cmds.include?(name.to_s.downcase)
 end
 
-def handle_connection(sock, upstream, session_map, monitor_cache, opts, log)
+def handle_connection(sock, upstream, session_map, opts, log)
   is_monitor = false
 
   peer_info = sock.peeraddr(false) rescue nil
@@ -767,7 +720,7 @@ def handle_connection(sock, upstream, session_map, monitor_cache, opts, log)
 
       begin
         if %w[hello ismaster].include?(cmd_name)
-          upstream_doc, _src = monitor_cache.fetch(upstream)
+          upstream_doc = upstream.use('admin').database.command(BSON::Document.new({'hello' => 1})).first
           reply_doc = deep_dup_bson(upstream_doc)
           rewrite_hello_reply!(reply_doc, opts.listen_host, opts.listen_port)
           reply_doc = ensure_cursor_reply_shape!(cmd_name, querydoc, db_name, reply_doc)
@@ -836,7 +789,7 @@ def handle_connection(sock, upstream, session_map, monitor_cache, opts, log)
 
     if %w[hello ismaster].include?(cmd_name)
       begin
-        upstream_doc, _src = monitor_cache.fetch(upstream)
+        upstream_doc = upstream.use('admin').database.command(BSON::Document.new({'hello' => 1})).first
       rescue => e
         upstream_doc = BSON::Document.new({'ok'=>1.0, 'isWritablePrimary'=>true, 'maxWireVersion'=>17, 'note'=>"hello synthesized due to upstream error: #{e.class}"})
       end
