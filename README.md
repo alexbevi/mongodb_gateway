@@ -1,52 +1,42 @@
-# mongodb-gateway (Ruby)
+# mongodb_gateway
 
 An application-layer **MongoDB proxy/gateway** written in Ruby.
 Clients connect to the gateway using a plain `mongodb://host:port` URI (no TLS, no auth).
 The gateway connects to your real cluster using the official Ruby driver and a full MongoDB connection string (auth, TLS, SRV, etc.) and **forwards commands** while letting you **inspect and log** what flows through.
 
-> ⚠️ PoC / Dev tool — not hardened for production. Review carefully before exposing to untrusted networks.
-
----
+> [!WARNING]
+> This project is intended for experimentation, debugging, and education.
+> It is **not** a drop-in security boundary or production proxy. Use responsibly.
 
 ## Why?
 
 * Inspect **opcodes**, **commands**, and **responses** between a MongoDB client and cluster.
 * Redact sensitive fields from logs (`lsid`, `$clusterTime`, etc.).
 * Suppress noisy “hello/ismaster” chatter.
-* Dump a **structured OP\_MSG** view (header, flags, sections, checksum) for deep debugging.
-* Keep only **one upstream monitoring fetch** active; others reuse its result.
+* Dump a **structured OP_MSG** view (header, flags, sections, checksum) for deep debugging.
 * Clean exits on Ctrl+C with background sweeping of stale connections.
-
----
 
 ## Features
 
 * Speaks Mongo wire to clients:
-
-  * **OP\_MSG** (modern commands)
-  * Accepts **OP\_QUERY** only for legacy **hello/ismaster** handshake.
+  * **OP_MSG** (modern commands)
+  * Accepts **OP_QUERY** only for legacy **hello/ismaster** handshake.
 * Forwards to upstream via **Ruby driver** using `--upstream-uri` (e.g. Atlas SRV URI).
 * **Hello/ismaster reply rewritten** so clients see the proxy’s `host:port`.
 * **Session-aware** forwarding (keeps driver sessions by `lsid`).
 * **Type normalization** (e.g., converts `txnNumber`/`getMore` to `Int64`) to avoid server type errors.
 * **Cursor reply shaping** so `cursor.id` is always Int64 and `ns/firstBatch/nextBatch` are sane.
 * **Verbose logging**:
-
   * Request/response bodies (pretty single-line JSON with ANSI colors via `--json`).
   * **Redaction** with `--redact-fields`.
   * **Command-level suppression** with `--redact-commands` (e.g., `hello,ismaster`).
-  * **Structured OP\_MSG** with `--raw-request` (header, flags, sections, checksum).
+  * **Structured OP_MSG** with `--raw-request` (header, flags, sections, checksum).
 * **Monitoring-aware**:
-
   * Detects monitoring connections (hello/ismaster without `lsid`).
   * Optional `--no-monitoring-logs` to hide monitoring connection lines and their REQ/RES logs.
-  * **Coalescing monitor cache**: one upstream `hello` at a time; others reuse cached doc.
 * **Operational niceties**:
-
   * Clean shutdown (non-blocking accept; second Ctrl+C forces exit).
   * Background **sweeper** prunes closed sockets/threads (`--sweep-interval`).
-
----
 
 ## Requirements
 
@@ -61,8 +51,6 @@ Install gems:
 ```bash
 gem install mongo bson
 ```
-
----
 
 ## Quick Start
 
@@ -85,8 +73,6 @@ mongosh "mongodb://127.0.0.1:27018/test"
 
 > ℹ️ **Atlas note:** When you use an SRV or TLS URI in `--upstream-uri`, **the Ruby driver handles CA/SNI**. You typically **do not** need to pass `--cafile` or tweak SNI for Atlas.
 
----
-
 ## Usage
 
 ```bash
@@ -108,8 +94,6 @@ ruby mongodb_gateway.rb [options]
 
 **Redaction matching:**
 If you pass `clusterTime`, the gateway also matches `$clusterTime` automatically (and vice-versa).
-
----
 
 ## What gets logged?
 
@@ -160,8 +144,6 @@ If you pass `clusterTime`, the gateway also matches `$clusterTime` automatically
 
 > Tip: `--raw-request` output **also** respects `--redact-fields`.
 
----
-
 ## How it works (high-level)
 
 ```
@@ -169,13 +151,10 @@ Client (no TLS/auth) ──► mongodb_gateway.rb ──► Upstream Cluster (TL
              OP_MSG / legacy OP_QUERY hello        using --upstream-uri
 ```
 
-* **Hello/isMaster**: The gateway caches the upstream response (5s TTL), then **rewrites** it so the client sees the gateway’s `hosts`/`me`. This keeps clients “pinned” to the proxy.
+* **Hello/isMaster**: The gateway fetches the upstream response for each request, then **rewrites** it so the client sees the gateway’s `hosts`/`me`. This keeps clients “pinned” to the proxy.
 * **Sessions**: A per-`lsid` map starts/reuses Ruby driver sessions; commands with `lsid` flow on the correct session.
 * **Type fixes**: Converts `txnNumber`, `getMore` to `Int64` to align with server expectations.
 * **Cursor replies**: Ensures `cursor.id` is Int64 and `ns/firstBatch/nextBatch` are present when needed.
-* **Monitoring cache**: Concurrent `hello/ismaster` calls are coalesced — only one upstream fetch runs; others wait and reuse the result.
-
----
 
 ## Clean Shutdown
 
@@ -183,55 +162,16 @@ Client (no TLS/auth) ──► mongodb_gateway.rb ──► Upstream Cluster (TL
 * **Ctrl+C twice**: force-stop lingering workers after a brief grace period.
 * Non-blocking accept loop + background sweeper ensure fast, quiet exits.
 
----
-
 ## Atlas & TLS
 
 * With an SRV/TLS connection string in `--upstream-uri`, the **Ruby driver** validates TLS and sets **SNI** automatically.
 * You **usually do not** need a custom CA file or SNI override for **MongoDB Atlas**.
 * The gateway itself **does not** accept TLS from clients in this PoC; clients connect in plaintext to the gateway.
 
----
-
 ## Limitations
 
 * **Security**: Gateway accepts plaintext, unauthenticated client connections. Use only on trusted hosts/networks.
 * **Protocol**: Only **OP\_MSG** is fully supported; **OP\_QUERY** is accepted **only** for initial handshake.
 * **Auth**: Client-side auth commands (`saslStart`, `saslContinue`, `authenticate`) are rejected; the gateway authenticates upstream using `--upstream-uri`.
-* **Compression**: Not supported in this PoC.
+* **Compression**: Not supported from client to gateway, though Network Compression from gateway to cluster should work as expected.
 * **Throughput**: Focused on observability and correctness; not tuned for high throughput/low latency.
-
----
-
-## Troubleshooting
-
-* **`TypeMismatch ... txnNumber is the wrong type 'int'`**
-  The gateway normalizes `txnNumber` to Int64, but if you disabled normalization locally or modified the code, restore `normalize_command_numeric_types!`.
-
-* **`ClientMetadataCannotBeMutated` on hello/ismaster**
-  Ensure you’re not altering the client metadata mid-connection; use the provided code paths that reuse the upstream cached doc and only rewrite `hosts`/`me`.
-
-* **ANSI colors look odd in files**
-  `--json` adds ANSI color codes for terminals. Pipe through a tool that strips ANSI codes if needed.
-
----
-
-## Development
-
-* Single file: **`mongodb_gateway.rb`**.
-* Key pieces:
-
-  * `handle_connection` — per-client loop.
-  * `parse_op_msg_first_doc`, `op_msg_structure_hash` — OP\_MSG parsing.
-  * `SessionMap` — `lsid`→Ruby session.
-  * `MonitorCache` — coalesced, TTL’d hello.
-  * `ensure_cursor_reply_shape!`, `normalize_command_numeric_types!` — server-compat helpers.
-
-Run with extra verbosity (already default), adjust redactions and command suppression to taste.
-
----
-
-## Disclaimer
-
-This project is intended for experimentation, debugging, and education.
-It is **not** a drop-in security boundary or production proxy. Use responsibly.
