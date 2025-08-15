@@ -71,8 +71,6 @@ mongosh "mongodb://127.0.0.1:27018/test"
 # The gateway authenticates upstream using --upstream-uri.
 ```
 
-> ℹ️ **Atlas note:** When you use an SRV or TLS URI in `--upstream-uri`, **the Ruby driver handles CA/SNI**. You typically **do not** need to pass `--cafile` or tweak SNI for Atlas.
-
 ## Usage
 
 ```bash
@@ -164,8 +162,7 @@ Client (no TLS/auth) ──► mongodb_gateway.rb ──► Upstream Cluster (TL
 
 ## Atlas & TLS
 
-* With an SRV/TLS connection string in `--upstream-uri`, the **Ruby driver** validates TLS and sets **SNI** automatically.
-* You **usually do not** need a custom CA file or SNI override for **MongoDB Atlas**.
+* With an SRV/TLS connection string in `--upstream-uri`, the **Ruby driver** validates TLS
 * The gateway itself **does not** accept TLS from clients in this PoC; clients connect in plaintext to the gateway.
 
 ## Limitations

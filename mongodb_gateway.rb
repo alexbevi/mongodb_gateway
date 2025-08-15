@@ -18,8 +18,7 @@
 #
 # Notes:
 # • Clients connect to the proxy without credentials. The gateway authenticates upstream using --upstream-uri.
-# • For Atlas, you typically do NOT need explicit --cafile or SNI: the Ruby driver handles TLS and SNI automatically
-#   when using mongodb+srv:// or mongodb:// with tls=true.
+# • For Atlas, the Ruby driver handles TLS automatically when using mongodb+srv:// or mongodb:// with tls=true.
 
 require 'socket'
 require 'optparse'
