@@ -478,6 +478,7 @@ end
 Options = Struct.new(
   :listen_host, :listen_port, :upstream_uri,
   :json_output, :redact_fields, :redact_cmds, :raw_request, :no_monitor_logs,
+  :no_responses,
   :sweep_interval,
   keyword_init: true
 )
@@ -496,6 +497,7 @@ def parse_opts
     redact_cmds: Set.new,
     raw_request: false,
     no_monitor_logs: false,
+    no_responses: false,
     sweep_interval: 5.0
   )
   OptionParser.new do |opts|
@@ -507,6 +509,7 @@ def parse_opts
       Suppress REQ/RES logs for whole commands via --redact-commands list (e.g. hello,ismaster,ping).
       Print structured OP_MSG via --raw-request (header, flags, sections, checksum).
       Hide monitoring connection logs via --no-monitoring-logs.
+      Suppress logging of responses (RES logs) via --no-responses.
       Auto-prune closed sockets/threads in the background via --sweep-interval.
 
       Defaults:
@@ -516,6 +519,7 @@ def parse_opts
         --redact-commands    (none)
         --raw-request        #{o.raw_request}
         --no-monitoring-logs #{o.no_monitor_logs}
+        --no-responses       #{o.no_responses}
         --sweep-interval     #{o.sweep_interval}s
     B
     opts.on("--listen HOST:PORT", "Local listen address (default: #{o.listen_host}:#{o.listen_port})") do |v|
@@ -531,6 +535,7 @@ def parse_opts
     end
     opts.on("--raw-request", "Print structured OP_MSG (header/flags/sections/checksum) for each request") { o.raw_request = true }
     opts.on("--no-monitoring-logs", "Suppress logging for monitoring connections") { o.no_monitor_logs = true }
+    opts.on("--no-responses", "Suppress logging of responses (RES logs)") { o.no_responses = true }
     opts.on("--sweep-interval SECONDS", Float, "Background sweep interval (default: #{o.sweep_interval}s)") { |v| o.sweep_interval = v }
     opts.on("-h","--help","Show help"){ puts opts; exit }
   end.parse!
@@ -594,7 +599,7 @@ def start_gateway!(opts, log)
     end
   end
 
-  log.info "Listening on #{opts.listen_host}:#{opts.listen_port}; upstream=#{opts.upstream_uri}; redactions=#{opts.redact_fields.to_a.join(',')}; redact_cmds=#{opts.redact_cmds.to_a.join(',')}; json=#{opts.json_output}; raw=#{opts.raw_request}; no_monitor_logs=#{opts.no_monitor_logs}; sweep_interval=#{opts.sweep_interval}s"
+  log.info "Listening on #{opts.listen_host}:#{opts.listen_port}; upstream=#{opts.upstream_uri}; redactions=#{opts.redact_fields.to_a.join(',')}; redact_cmds=#{opts.redact_cmds.to_a.join(',')}; json=#{opts.json_output}; raw=#{opts.raw_request}; no_monitor_logs=#{opts.no_monitor_logs}; no_responses=#{opts.no_responses}; sweep_interval=#{opts.sweep_interval}s"
 
   begin
     # Non-blocking accept loop driven by IO.select so shutdown is responsive without exceptions.
@@ -723,7 +728,7 @@ def handle_connection(sock, upstream, session_map, opts, log)
           reply_doc = deep_dup_bson(upstream_doc)
           rewrite_hello_reply!(reply_doc, opts.listen_host, opts.listen_port)
           reply_doc = ensure_cursor_reply_shape!(cmd_name, querydoc, db_name, reply_doc)
-          unless redacted_command?(cmd_name, opts) || (opts.no_monitor_logs && is_monitor_local)
+          unless redacted_command?(cmd_name, opts) || (opts.no_monitor_logs && is_monitor_local) || opts.no_responses
             log.debug "RES #{cmd_name} (rewritten): #{format_for_log(reply_doc, opts.redact_fields, as_json: opts.json_output)}"
           end
           sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: reply_doc))
@@ -732,7 +737,7 @@ def handle_connection(sock, upstream, session_map, opts, log)
           res = upstream.use(db_name).database.command(querydoc)
           first = res.first || BSON::Document.new({'ok'=>1.0})
           first = ensure_cursor_reply_shape!(cmd_name, querydoc, db_name, first)
-          unless redacted_command?(cmd_name, opts) || (opts.no_monitor_logs && is_monitor_local)
+          unless redacted_command?(cmd_name, opts) || (opts.no_monitor_logs && is_monitor_local) || opts.no_responses
             log.debug "RES #{cmd_name}: #{format_for_log(first, opts.redact_fields, as_json: opts.json_output)}"
           end
           sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: first))
@@ -740,14 +745,14 @@ def handle_connection(sock, upstream, session_map, opts, log)
       rescue Mongo::Error::OperationFailure => e
         log.warn "Upstream OP_QUERY operation failure: code=#{e.code} message=#{e.message}"
         doc = BSON::Document.new({'ok'=>0.0,'errmsg'=>e.message,'code'=>e.code,'codeName'=>e.class.name.split('::').last})
-        unless redacted_command?(cmd_name, opts) || (opts.no_monitor_logs && is_monitor_local)
+        unless redacted_command?(cmd_name, opts) || (opts.no_monitor_logs && is_monitor_local) || opts.no_responses
           log.debug "RES error #{cmd_name}: #{format_for_log(doc, opts.redact_fields, as_json: opts.json_output)}"
         end
         sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: doc))
       rescue => e
         log.error "Gateway error during OP_QUERY handling: #{e.class}: #{e.message}"
         doc = error_doc("Gateway error: #{e.class}: #{e.message}", 1, 'InternalError')
-        unless redacted_command?(cmd_name, opts) || (opts.no_monitor_logs && is_monitor_local)
+        unless redacted_command?(cmd_name, opts) || (opts.no_monitor_logs && is_monitor_local) || opts.no_responses
           log.debug "RES error #{cmd_name}: #{format_for_log(doc, opts.redact_fields, as_json: opts.json_output)}"
         end
         sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: doc))
@@ -779,7 +784,7 @@ def handle_connection(sock, upstream, session_map, opts, log)
     if %w[saslstart saslcontinue authenticate].include?(cmd_name)
       log.warn "Client attempted authentication command (#{cmd_name}); gateway uses its own upstream credentials"
       doc = error_doc("Client authentication not supported by gateway; connect without credentials.", 18, 'AuthenticationFailed')
-      unless redacted_command?(cmd_name, opts) || (opts.no_monitor_logs && is_monitor_local)
+      unless redacted_command?(cmd_name, opts) || (opts.no_monitor_logs && is_monitor_local) || opts.no_responses
         log.debug "RES #{cmd_name} error: #{format_for_log(doc, opts.redact_fields, as_json: opts.json_output)}"
       end
       sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: doc))
@@ -795,7 +800,7 @@ def handle_connection(sock, upstream, session_map, opts, log)
       reply_doc = deep_dup_bson(upstream_doc)
       rewrite_hello_reply!(reply_doc, opts.listen_host, opts.listen_port)
       reply_doc = ensure_cursor_reply_shape!(cmd_name, cmd, db_name, reply_doc)
-      unless redacted_command?(cmd_name, opts) || (opts.no_monitor_logs && is_monitor_local)
+      unless redacted_command?(cmd_name, opts) || (opts.no_monitor_logs && is_monitor_local) || opts.no_responses
         log.debug "RES #{cmd_name} (rewritten): #{format_for_log(reply_doc, opts.redact_fields, as_json: opts.json_output)}"
       end
       sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: reply_doc))
@@ -810,21 +815,21 @@ def handle_connection(sock, upstream, session_map, opts, log)
       res = upstream.use(db_name).database.command(doc_for_upstream, session: sess)
       first = res.first || BSON::Document.new({'ok'=>1.0})
       first = ensure_cursor_reply_shape!(cmd_name, cmd, db_name, first)
-      unless redacted_command?(cmd_name, opts) || (opts.no_monitor_logs && is_monitor_local)
+      unless redacted_command?(cmd_name, opts) || (opts.no_monitor_logs && is_monitor_local) || opts.no_responses
         log.debug "RES #{cmd_name}: #{format_for_log(first, opts.redact_fields, as_json: opts.json_output)}"
       end
       sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: first))
     rescue Mongo::Error::OperationFailure => e
       log.warn "Upstream operation failure: code=#{e.code} message=#{e.message}"
       doc = BSON::Document.new({'ok'=>0.0,'errmsg'=>e.message,'code'=>e.code,'codeName'=>e.class.name.split('::').last})
-      unless redacted_command?(cmd_name, opts) || (opts.no_monitor_logs && is_monitor_local)
+      unless redacted_command?(cmd_name, opts) || (opts.no_monitor_logs && is_monitor_local) || opts.no_responses
         log.debug "RES #{cmd_name} error: #{format_for_log(doc, opts.redact_fields, as_json: opts.json_output)}"
       end
       sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: doc))
     rescue => e
       log.error "Gateway error during command handling: #{e.class}: #{e.message}"
       doc = error_doc("Gateway error: #{e.class}: #{e.message}", 1, 'InternalError')
-      unless redacted_command?(cmd_name, opts) || (opts.no_monitor_logs && is_monitor_local)
+      unless redacted_command?(cmd_name, opts) || (opts.no_monitor_logs && is_monitor_local) || opts.no_responses
         log.debug "RES #{cmd_name} error: #{format_for_log(doc, opts.redact_fields, as_json: opts.json_output)}"
       end
       sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: doc))
