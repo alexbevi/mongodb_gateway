@@ -480,22 +480,6 @@ def parse_opts
     opts.banner = <<~B
       Usage: ruby mongodb_gateway.rb [options]
 
-      Logs REQ/RES bodies; --json for colorized single-line JSON.
-      Redact keys via --redact-fields k1,k2 (matches both "name" and "$name").
-      Suppress REQ/RES logs for whole commands via --redact-commands list (e.g. hello,ismaster,ping).
-      Print structured OP_MSG via --raw-request (header, flags, sections, checksum).
-      Hide monitoring connection logs via --no-monitoring-logs.
-      Suppress logging of responses (RES logs) via --no-responses.
-      Auto-prune closed sockets/threads in the background via --sweep-interval.
-
-      Defaults:
-        --listen             #{o.listen_host}:#{o.listen_port}
-        --redact-fields      (none)
-        --redact-commands    (none)
-        --raw-requests       #{o.raw_requests}
-        --no-monitoring-logs #{o.no_monitor_logs}
-        --no-responses       #{o.no_responses}
-        --sweep-interval     #{o.sweep_interval}s
     B
     opts.on("--listen HOST:PORT", "Local listen address (default: #{o.listen_host}:#{o.listen_port})") do |v|
       h,p = v.split(':',2); o.listen_host=h; o.listen_port=Integer(p)
