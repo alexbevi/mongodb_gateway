@@ -1,25 +1,6 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-
-# mongodb_gateway.rb — Application-Layer MongoDB Gateway (Ruby 3.x)
 #
-# Highlights:
-# • Speaks Mongo wire to clients (OP_MSG; accepts legacy OP_QUERY for handshake).
-# • Forwards commands to an upstream cluster via Ruby driver --upstream-uri.
-# • Rewrites hello/isMaster to pin clients to the proxy address derived from --listen.
-# • Logs FULL REQ/RES bodies; add --json for colorized single-line JSON.
-# • Redaction via --redact-fields for keys (e.g., lsid,$clusterTime). Matches both "$name" and "name".
-# • --redact-commands suppresses REQ/RES logs for whole commands (e.g., hello,ismaster,ping).
-# • --raw-request prints a structured JSON view of OP_MSG (header, flags, sections, optional checksum).
-# • --no-monitoring-logs hides monitoring connection lines AND their REQ/RES/RAW logs (connection still processed & kept open).
-# • Shared monitoring cache ensures only one upstream hello fetch at a time; concurrent requests are coalesced.
-# • Clean shutdown on Ctrl+C / SIGTERM: non-blocking accept loop; 2nd Ctrl+C forces termination.
-# • Background sweeper auto-prunes closed sockets/threads at an interval (default 5s; configurable via --sweep-interval).
-#
-# Notes:
-# • Clients connect to the proxy without credentials. The gateway authenticates upstream using --upstream-uri.
-# • For Atlas, the Ruby driver handles TLS automatically when using mongodb+srv:// or mongodb:// with tls=true.
-
 require 'socket'
 require 'optparse'
 require 'logger'
@@ -231,7 +212,7 @@ def next_request_id
   @req_id += 1
 end
 
-# ----- OP_MSG raw structure (for --raw-request) -------------------------------
+# ----- OP_MSG raw structure (for --raw-requests) -------------------------------
 
 # Decoded flags
 MSG_FLAG_CHECKSUM_PRESENT = 1 << 0
@@ -477,7 +458,7 @@ end
 
 Options = Struct.new(
   :listen_host, :listen_port, :upstream_uri,
-  :json_output, :redact_fields, :redact_cmds, :raw_request, :no_monitor_logs,
+  :json_output, :redact_fields, :redact_cmds, :raw_requests, :no_monitor_logs,
   :no_responses,
   :sweep_interval,
   keyword_init: true
@@ -495,7 +476,7 @@ def parse_opts
     json_output: false,
     redact_fields: Set.new,
     redact_cmds: Set.new,
-    raw_request: false,
+    raw_requests: false,
     no_monitor_logs: false,
     no_responses: false,
     sweep_interval: 5.0
@@ -517,7 +498,7 @@ def parse_opts
         --json               #{o.json_output}
         --redact-fields      (none)
         --redact-commands    (none)
-        --raw-request        #{o.raw_request}
+        --raw-requests       #{o.raw_requests}
         --no-monitoring-logs #{o.no_monitor_logs}
         --no-responses       #{o.no_responses}
         --sweep-interval     #{o.sweep_interval}s
@@ -533,7 +514,7 @@ def parse_opts
     opts.on("--redact-commands LIST", "Comma-separated command names to suppress in REQ/RES logs (e.g. hello,ismaster,ping)") do |v|
       parse_list(v).each { |c| o.redact_cmds << c.downcase }
     end
-    opts.on("--raw-request", "Print structured OP_MSG (header/flags/sections/checksum) for each request") { o.raw_request = true }
+    opts.on("--raw-requests", "Print structured OP_MSG (header/flags/sections/checksum) for each request; suppress standard REQ log") { o.raw_requests = true }
     opts.on("--no-monitoring-logs", "Suppress logging for monitoring connections") { o.no_monitor_logs = true }
     opts.on("--no-responses", "Suppress logging of responses (RES logs)") { o.no_responses = true }
     opts.on("--sweep-interval SECONDS", Float, "Background sweep interval (default: #{o.sweep_interval}s)") { |v| o.sweep_interval = v }
@@ -599,7 +580,7 @@ def start_gateway!(opts, log)
     end
   end
 
-  log.info "Listening on #{opts.listen_host}:#{opts.listen_port}; upstream=#{opts.upstream_uri}; redactions=#{opts.redact_fields.to_a.join(',')}; redact_cmds=#{opts.redact_cmds.to_a.join(',')}; json=#{opts.json_output}; raw=#{opts.raw_request}; no_monitor_logs=#{opts.no_monitor_logs}; no_responses=#{opts.no_responses}; sweep_interval=#{opts.sweep_interval}s"
+  log.info "Listening on #{opts.listen_host}:#{opts.listen_port}; upstream=#{opts.upstream_uri}; redactions=#{opts.redact_fields.to_a.join(',')}; redact_cmds=#{opts.redact_cmds.to_a.join(',')}; json=#{opts.json_output}; raw_requests=#{opts.raw_requests}; no_monitor_logs=#{opts.no_monitor_logs}; no_responses=#{opts.no_responses}; sweep_interval=#{opts.sweep_interval}s"
 
   begin
     # Non-blocking accept loop driven by IO.select so shutdown is responsive without exceptions.
@@ -698,7 +679,13 @@ def handle_connection(sock, upstream, session_map, opts, log)
 
     first_cmd_name = (first_doc.keys.first || '').to_s.downcase
     unless redacted_command?(first_cmd_name, opts) || (opts.no_monitor_logs && is_monitor)
-      log.debug "REQ first #{first_cmd_name}: #{format_for_log(first_doc, opts.redact_fields, as_json: opts.json_output)}"
+      if opts.raw_requests
+        struct = op_msg_structure_hash(hdr, payload, opts.redact_fields)
+        line = opts.json_output ? prettify_json(struct) : JSON.generate(struct)
+        log.debug "RAW OP_MSG #{first_cmd_name}: #{line}"
+      else
+        log.debug "REQ first #{first_cmd_name}: #{format_for_log(first_doc, opts.redact_fields, as_json: opts.json_output)}"
+      end
     end
   else
     log.info "Client connected: #{peer_host}:#{peer_port}"
@@ -773,11 +760,12 @@ def handle_connection(sock, upstream, session_map, opts, log)
     is_monitor_local = likely_monitoring_connection?(cmd)
 
     unless redacted_command?(cmd_name, opts) || (opts.no_monitor_logs && is_monitor_local)
-      log.debug "REQ OP_MSG #{cmd_name}: #{format_for_log(cmd, opts.redact_fields, as_json: opts.json_output)}"
-      if opts.raw_request
+      if opts.raw_requests
         struct = op_msg_structure_hash(hdr_local, payload_local, opts.redact_fields)
         line = opts.json_output ? prettify_json(struct) : JSON.generate(struct)
         log.debug "RAW OP_MSG #{cmd_name}: #{line}"
+      else
+        log.debug "REQ OP_MSG #{cmd_name}: #{format_for_log(cmd, opts.redact_fields, as_json: opts.json_output)}"
       end
     end
 
