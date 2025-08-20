@@ -27,10 +27,10 @@ The gateway connects to your real cluster using the official Ruby driver and a f
 * **Type normalization** (e.g., converts `txnNumber`/`getMore` to `Int64`) to avoid server type errors.
 * **Cursor reply shaping** so `cursor.id` is always Int64 and `ns/firstBatch/nextBatch` are sane.
 * **Verbose logging**:
-  * Request/response bodies (pretty single-line JSON with ANSI colors; JSON is now always used)
+  * Request/response bodies (pretty single-line JSON with ANSI colors via `--json`).
   * **Redaction** with `--redact-fields`.
   * **Command-level suppression** with `--redact-commands` (e.g., `hello,ismaster`).
-  * **Structured OP_MSG** with `--raw-requests` (header, flags, sections, checksum; suppresses standard REQ log).
+  * **Structured OP_MSG** with `--raw-request` (header, flags, sections, checksum).
 * **Monitoring-aware**:
   * Detects monitoring connections (hello/ismaster without `lsid`).
   * Optional `--no-monitoring-logs` to hide monitoring connection lines and their REQ/RES logs.
@@ -58,6 +58,7 @@ gem install mongo bson
 ruby mongodb_gateway.rb \
   --listen 127.0.0.1:27018 \
   --upstream-uri "mongodb+srv://USERNAME:PASSWORD@your-cluster.mongodb.net/?retryWrites=true&w=majority" \
+  --json \
   --redact-fields lsid,$clusterTime,operationTime \
   --redact-commands hello,ismaster
 ```
@@ -82,11 +83,11 @@ ruby mongodb_gateway.rb [options]
 | -------------------------- | ------------------------------------------------------------------------------------------------------ | ----------------- |
 | `--listen HOST:PORT`       | Address for the gateway to listen on.                                                                  | `127.0.0.1:27018` |
 | `--upstream-uri URI`       | **Required.** Full MongoDB connection string for the real cluster (supports SRV/TLS/auth).             | *(none)*          |
+| `--json`                   | Colorized, single-line JSON for REQ/RES logs.                                                          | `false`           |
 | `--redact-fields LIST`     | Comma-separated field names to redact (matches both `name` and `$name`). Example: `lsid,$clusterTime`. | *(none)*          |
 | `--redact-commands LIST`   | Suppress logging for whole commands. Example: `hello,ismaster,ping`.                                   | *(none)*          |
-| `--raw-requests`           | Log a **structured OP_MSG** object (header, flag bits & booleans, sections, checksum) and suppress standard REQ log. | `false`           |
+| `--raw-request`            | Also log a **structured OP\_MSG** object (header, flag bits & booleans, sections, checksum).           | `false`           |
 | `--no-monitoring-logs`     | Hide logs for monitoring connections (connection still handled).                                       | `false`           |
-| `--no-responses`           | Suppress logging of responses (RES logs).                                                              | `false`           |
 | `--sweep-interval SECONDS` | Background interval to prune closed sockets/threads.                                                   | `5.0`             |
 
 **Redaction matching:**
@@ -99,9 +100,11 @@ If you pass `clusterTime`, the gateway also matches `$clusterTime` automatically
   `info: Client connected: 127.0.0.1:58980 [monitoring] (nodejs|mongosh 6.17.0|2.5.5, app=mongosh 2.5.5, platform=Node.js v24.4.0, LE)`
 
 * **Requests/Responses** (`REQ/RES`):
-  * Pretty single-line JSON with ANSI colors (JSON is always used).
+
+  * Pretty single-line JSON with ANSI colors when `--json` is set.
   * Respect `--redact-fields` and `--redact-commands`.
-* **Raw OP_MSG structure** when `--raw-requests` is set (shown as JSON; suppresses standard REQ log):
+
+* **Raw OP\_MSG structure** when `--raw-request` is set (shown as JSON):
 
   ```json
   {
