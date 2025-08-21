@@ -3,6 +3,7 @@ require 'socket'
 require 'logger'
 require 'time'
 require 'thread'
+require 'set'
 
 module MongodbGateway
   class Server
@@ -123,9 +124,12 @@ module MongodbGateway
       first_frame = codec.read_frame(sock)
       return unless first_frame
 
+      # track requestIDs we've already logged as RAW to avoid duplicate formatted REQ logs
+      raw_logged = Set.new
+
       hdr = codec.parse_header(first_frame)
       unless hdr[:opcode] == codec::OP_MSG || hdr[:opcode] == codec::OP_QUERY
-        @log.warn "Unsupported opcode from client: #{opcode_name(hdr[:opcode])} (#{hdr[:opcode]}); only OP_MSG or OP_QUERY accepted"
+        @log.warn "Unsupported opcode from client: #{codec.opcode_name(hdr[:opcode])} (#{hdr[:opcode]}); only OP_MSG or OP_QUERY accepted"
         reply = build_op_msg_reply(response_to: hdr[:req_id], doc: error_doc("Only OP_MSG or OP_QUERY supported in gateway PoC", 2, 'BadValue'))
         sock.write(reply) rescue nil
         return
@@ -153,7 +157,8 @@ module MongodbGateway
           if @opts.raw_requests
             struct = codec.op_msg_structure_hash(hdr, payload, @opts.redact_fields)
             line = @log.prettify_json(struct)
-            @log.debug "RAW OP_MSG #{first_cmd_name}: #{line}"
+            @log.debug "RAW #{codec.opcode_name(hdr[:opcode])} #{first_cmd_name}: #{line}"
+            raw_logged << hdr[:req_id]
           else
             @log.debug "REQ first #{first_cmd_name}: #{@log.format_for_log(first_doc, @opts.redact_fields)}"
           end
@@ -177,7 +182,10 @@ module MongodbGateway
           is_monitor_local = likely_monitoring_connection?(querydoc)
 
           unless redacted_command?(cmd_name, @opts) || (@opts.no_monitor_logs && is_monitor_local)
-            @log.debug "REQ OP_QUERY #{cmd_name}: #{@log.format_for_log(querydoc, @opts.redact_fields)}"
+            # If we already emitted a RAW log for this request id, skip the duplicate formatted REQ
+            unless @opts.raw_requests && raw_logged.include?(hdr_local[:req_id])
+              @log.debug "REQ OP_QUERY #{cmd_name}: #{@log.format_for_log(querydoc, @opts.redact_fields)}"
+            end
           end
 
           begin
@@ -234,7 +242,8 @@ module MongodbGateway
           if @opts.raw_requests
             struct = codec.op_msg_structure_hash(hdr_local, payload_local, @opts.redact_fields)
             line = @log.prettify_json(struct)
-            @log.debug "RAW OP_MSG #{cmd_name}: #{line}"
+            @log.debug "RAW #{codec.opcode_name(hdr_local[:opcode])} #{cmd_name}: #{line}"
+            raw_logged << hdr_local[:req_id]
           else
             @log.debug "REQ OP_MSG #{cmd_name}: #{@log.format_for_log(cmd, @opts.redact_fields)}"
           end
@@ -302,7 +311,7 @@ module MongodbGateway
         hdr2 = codec.parse_header(frame)
         unless hdr2[:opcode] == codec::OP_MSG || hdr2[:opcode] == codec::OP_QUERY
           reply = build_op_msg_reply(response_to: hdr2[:req_id], doc: error_doc("Only OP_MSG or OP_QUERY supported in gateway PoC", 2, 'BadValue'))
-          @log.warn "Unsupported opcode from client: #{opcode_name(hdr2[:opcode])} (#{hdr2[:opcode]}); only OP_MSG or OP_QUERY accepted"
+          @log.warn "Unsupported opcode from client: #{codec.opcode_name(hdr2[:opcode])} (#{hdr2[:opcode]}); only OP_MSG or OP_QUERY accepted"
           sock.write(reply)
           next
         end
@@ -390,7 +399,7 @@ module MongodbGateway
     def rewrite_hello_reply!(doc, proxy_host, proxy_port)
       return doc unless doc.is_a?(BSON::Document)
       doc['ok'] = 1.0
-      doc['helloOk'] = true
+      # doc['helloOk'] ||= true
       proxy = "#{proxy_host}:#{proxy_port}"
       doc['hosts'] = [proxy]
       doc['me'] = proxy

@@ -67,25 +67,88 @@ module MongodbGateway
     def parse_op_query(payload)
       idx = 0
       return nil unless payload.bytesize >= 4
-      _flags = payload[idx,4].unpack1('l<'); idx += 4
+
+      # flags (int32)
+      flags = payload[idx,4].unpack1('l<'); idx += 4
+
+      # fullCollectionName (cstring)
       nul = payload.index("\x00", idx) or return nil
       full_coll = payload[idx...nul]; idx = nul + 1
+
+      # numberToSkip and numberToReturn
       return nil unless payload.bytesize >= idx + 8
-      _skip  = payload[idx,4].unpack1('l<'); idx += 4
-      _limit = payload[idx,4].unpack1('l<'); idx += 4
+      number_to_skip   = payload[idx,4].unpack1('l<'); idx += 4
+      number_to_return = payload[idx,4].unpack1('l<'); idx += 4
+
+      # query BSON document
       return nil unless payload.bytesize >= idx + 4
       q_len = payload[idx,4].unpack1('l<')
       return nil unless payload.bytesize >= idx + q_len
       query_raw = payload[idx, q_len]; idx += q_len
-      db_name = full_coll.split('.', 2).first || 'admin'
       query_doc = bson_decode(query_raw)
-      { db: db_name, query: query_doc }
+
+      # optional returnFieldsSelector (BSON) may follow
+      fields_doc = nil
+      if payload.bytesize >= idx + 4
+        f_len = payload[idx,4].unpack1('l<')
+        if payload.bytesize >= idx + f_len
+          fields_raw = payload[idx, f_len]
+          begin
+            fields_doc = bson_decode(fields_raw)
+          rescue => _e
+            # if fields selector is malformed, ignore it
+            fields_doc = nil
+          end
+          idx += f_len
+        end
+      end
+
+      db_name = full_coll.split('.', 2).first || 'admin'
+
+      {
+        db: db_name,
+        full_collection: full_coll,
+        flags: flags,
+        number_to_skip: number_to_skip,
+        number_to_return: number_to_return,
+        query: query_doc,
+        fields: fields_doc
+      }
     rescue => e
       warn "[warn] failed to parse OP_QUERY: #{e.class}: #{e.message}"
       nil
     end
 
     def op_msg_structure_hash(hdr, payload, redact_set)
+      # If this message is actually an OP_QUERY (legacy opcode), parse it as such
+      if hdr[:opcode] == OP_QUERY
+        parsed = parse_op_query(payload)
+        return { "parseError" => "unable to parse OP_QUERY" } unless parsed
+
+        qdoc = parsed[:query]
+        fdoc = parsed[:fields]
+        qdoc = (redact_set && !redact_set.empty?) ? redact_doc_for_log(qdoc, redact_set) : qdoc
+        fdoc = (fdoc && redact_set && !redact_set.empty?) ? redact_doc_for_log(fdoc, redact_set) : fdoc
+
+        return {
+          "header" => {
+            "messageLength" => hdr[:len],
+            "requestID"     => hdr[:req_id],
+            "responseTo"    => hdr[:res_to],
+            "opCode"        => hdr[:opcode],
+            "opCodeName"    => opcode_name(hdr[:opcode])
+          },
+          "flagBits" => parsed[:flags],
+          "op_query" => {
+            "fullCollectionName" => parsed[:full_collection],
+            "numberToSkip"       => parsed[:number_to_skip],
+            "numberToReturn"     => parsed[:number_to_return],
+            "query"              => qdoc,
+            "fields"             => fdoc
+          }
+        }
+      end
+
       flags_u32 = payload[0,4].unpack1('L<')
       checksum_present = (flags_u32 & MSG_FLAG_CHECKSUM_PRESENT) != 0
       more_to_come     = (flags_u32 & MSG_FLAG_MORE_TO_COME) != 0

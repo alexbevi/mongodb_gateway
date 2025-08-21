@@ -22,7 +22,7 @@ connection string and forwards commands while letting you inspect and log what f
 
 * Speaks [MongoDB Wire Protocol](https://www.mongodb.com/docs/manual/reference/mongodb-wire-protocol/) to clients:
   * `OP_MSG` (modern commands)
-  * Accepts `OP_QUERY` only for legacy hello/ismaster handshake
+  * Accepts [`OP_QUERY`](https://www.mongodb.com/docs/manual/legacy-opcodes/#op_query) only for legacy `hello`/`ismaster` handshake
 * Forwards to upstream via the Ruby driver using `--upstream-uri` (e.g. Atlas SRV URI)
 * `hello`/`ismaster` reply rewritten so clients see the proxy’s `host:port`
 * Session-aware forwarding (keeps driver sessions by `lsid`)
