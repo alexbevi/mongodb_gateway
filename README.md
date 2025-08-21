@@ -122,7 +122,7 @@ ruby mongodb_gateway.rb [options]
 }
 ```
 
-> [!INFO]
+> [!TIP]
 > `--raw-requests` output also respects `--redact-fields`.
 
 ## Clean Shutdown
