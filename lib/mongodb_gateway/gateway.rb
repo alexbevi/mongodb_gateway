@@ -26,7 +26,7 @@ module MongodbGateway
 
     def self.run(opts, log)
       Mongo::Logger.logger.level = Logger::WARN
-      upstream = Mongo::Client.new(opts.upstream_uri, server_api: { version: '1' })
+      upstream = Mongo::Client.new(opts.upstream_uri)
       Server.new(opts, log, upstream).start
     end
   end
