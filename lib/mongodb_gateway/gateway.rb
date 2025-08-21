@@ -31,4 +31,3 @@ module MongodbGateway
     end
   end
 end
-    def pack_i32_le(i) = [i].pack('l<')
