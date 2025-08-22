@@ -130,7 +130,7 @@ module MongodbGateway
       hdr = codec.parse_header(first_frame)
       unless hdr[:opcode] == codec::OP_MSG || hdr[:opcode] == codec::OP_QUERY
         @log.warn "Unsupported opcode from client: #{codec.opcode_name(hdr[:opcode])} (#{hdr[:opcode]}); only OP_MSG or OP_QUERY accepted"
-        reply = build_op_msg_reply(response_to: hdr[:req_id], doc: error_doc("Only OP_MSG or OP_QUERY supported in gateway PoC", 2, 'BadValue'))
+        reply = build_op_msg_reply(response_to: hdr[:req_id], doc: error_doc("Only OP_MSG or OP_QUERY supported in gateway PoC", 2, 'BadValue'), request_opcode: hdr[:opcode])
         sock.write(reply) rescue nil
         return
       end
@@ -172,7 +172,7 @@ module MongodbGateway
           parsed = codec.parse_op_query(payload_local)
           unless parsed
             @log.warn "Malformed OP_QUERY from client (unable to parse)"
-            sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: error_doc("Invalid OP_QUERY", 2, 'BadValue')))
+            sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: error_doc("Invalid OP_QUERY", 2, 'BadValue'), request_opcode: hdr_local[:opcode]))
             return
           end
 
@@ -197,7 +197,7 @@ module MongodbGateway
               unless redacted_command?(cmd_name, @opts) || (@opts.no_monitor_logs && is_monitor_local) || @opts.no_responses
                 @log.debug "RES #{cmd_name} (rewritten): #{@log.format_for_log(reply_doc, @opts.redact_fields)}"
               end
-              sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: reply_doc))
+              sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: reply_doc, request_opcode: hdr_local[:opcode]))
             else
               normalize_command_numeric_types!(querydoc)
               res = @upstream.use(db_name).database.command(querydoc)
@@ -206,7 +206,7 @@ module MongodbGateway
               unless redacted_command?(cmd_name, @opts) || (@opts.no_monitor_logs && is_monitor_local) || @opts.no_responses
                 @log.debug "RES #{cmd_name}: #{@log.format_for_log(first, @opts.redact_fields)}"
               end
-              sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: first))
+              sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: first, request_opcode: hdr_local[:opcode]))
             end
           rescue Mongo::Error::OperationFailure => e
             @log.warn "Upstream OP_QUERY operation failure: code=#{e.code} message=#{e.message}"
@@ -214,14 +214,14 @@ module MongodbGateway
             unless redacted_command?(cmd_name, @opts) || (@opts.no_monitor_logs && is_monitor_local) || @opts.no_responses
               @log.debug "RES error #{cmd_name}: #{@log.format_for_log(doc, @opts.redact_fields)}"
             end
-            sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: doc))
+            sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: doc, request_opcode: hdr_local[:opcode]))
           rescue => e
             @log.error "Gateway error during OP_QUERY handling: #{e.class}: #{e.message}"
             doc = error_doc("Gateway error: #{e.class}: #{e.message}", 1, 'InternalError')
             unless redacted_command?(cmd_name, @opts) || (@opts.no_monitor_logs && is_monitor_local) || @opts.no_responses
               @log.debug "RES error #{cmd_name}: #{@log.format_for_log(doc, @opts.redact_fields)}"
             end
-            sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: doc))
+            sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: doc, request_opcode: hdr_local[:opcode]))
           end
 
           next
@@ -230,7 +230,7 @@ module MongodbGateway
         _flags, cmd = codec.parse_op_msg_first_doc(payload_local)
         unless cmd
           @log.warn "Malformed OP_MSG from client (unable to parse first BSON document)"
-          sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: error_doc("Invalid OP_MSG", 2, 'BadValue')))
+          sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: error_doc("Invalid OP_MSG", 2, 'BadValue'), request_opcode: hdr_local[:opcode]))
           next
         end
 
@@ -255,7 +255,7 @@ module MongodbGateway
           unless redacted_command?(cmd_name, @opts) || (@opts.no_monitor_logs && is_monitor_local) || @opts.no_responses
             @log.debug "RES #{cmd_name} error: #{format_for_log(doc, @opts.redact_fields)}"
           end
-          sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: doc))
+          sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: doc, request_opcode: hdr_local[:opcode]))
           next
         end
 
@@ -271,7 +271,7 @@ module MongodbGateway
           unless redacted_command?(cmd_name, @opts) || (@opts.no_monitor_logs && is_monitor_local) || @opts.no_responses
             @log.debug "RES #{cmd_name} (rewritten): #{@log.format_for_log(reply_doc, @opts.redact_fields)}"
           end
-          sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: reply_doc))
+          sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: reply_doc, request_opcode: hdr_local[:opcode]))
           next
         end
 
@@ -286,21 +286,21 @@ module MongodbGateway
           unless redacted_command?(cmd_name, @opts) || (@opts.no_monitor_logs && is_monitor_local) || @opts.no_responses
             @log.debug "RES #{cmd_name}: #{@log.format_for_log(first, @opts.redact_fields)}"
           end
-          sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: first))
+          sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: first, request_opcode: hdr_local[:opcode]))
         rescue Mongo::Error::OperationFailure => e
           @log.warn "Upstream operation failure: code=#{e.code} message=#{e.message}"
           doc = BSON::Document.new({'ok'=>0.0,'errmsg'=>e.message,'code'=>e.code,'codeName'=>e.class.name.split('::').last})
           unless redacted_command?(cmd_name, @opts) || (@opts.no_monitor_logs && is_monitor_local) || @opts.no_responses
             @log.debug "RES #{cmd_name} error: #{@log.format_for_log(doc, @opts.redact_fields)}"
           end
-          sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: doc))
+          sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: doc, request_opcode: hdr_local[:opcode]))
         rescue => e
           @log.error "Gateway error during command handling: #{e.class}: #{e.message}"
           doc = error_doc("Gateway error: #{e.class}: #{e.message}", 1, 'InternalError')
           unless redacted_command?(cmd_name, @opts) || (@opts.no_monitor_logs && is_monitor_local) || @opts.no_responses
             @log.debug "RES #{cmd_name} error: #{@log.format_for_log(doc, @opts.redact_fields)}"
           end
-          sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: doc))
+          sock.write(build_op_msg_reply(response_to: hdr_local[:req_id], doc: doc, request_opcode: hdr_local[:opcode]))
         end
       end
 
@@ -310,7 +310,7 @@ module MongodbGateway
       while (frame = codec.read_frame(sock))
         hdr2 = codec.parse_header(frame)
         unless hdr2[:opcode] == codec::OP_MSG || hdr2[:opcode] == codec::OP_QUERY
-          reply = build_op_msg_reply(response_to: hdr2[:req_id], doc: error_doc("Only OP_MSG or OP_QUERY supported in gateway PoC", 2, 'BadValue'))
+          reply = build_op_msg_reply(response_to: hdr2[:req_id], doc: error_doc("Only OP_MSG or OP_QUERY supported in gateway PoC", 2, 'BadValue'), request_opcode: hdr2[:opcode])
           @log.warn "Unsupported opcode from client: #{codec.opcode_name(hdr2[:opcode])} (#{hdr2[:opcode]}); only OP_MSG or OP_QUERY accepted"
           sock.write(reply)
           next
@@ -379,7 +379,7 @@ module MongodbGateway
       return nil unless c.is_a?(Hash) || c.is_a?(BSON::Document)
       parts = []
       if (drv = c['driver']).is_a?(Hash) || drv.is_a?(BSON::Document)
-        parts << "#{drv['name']} #{drv['version']}'.strip"
+        parts << "#{drv['name']} #{drv['version']}".strip
       end
       if (app = c['application']).is_a?(Hash) || app.is_a?(BSON::Document)
         parts << "app=#{app['name']}" if app['name']
@@ -413,15 +413,33 @@ module MongodbGateway
       BSON::Document.new({'ok'=>0.0,'errmsg'=>msg,'code'=>code,'codeName'=>code_name})
     end
 
-    def build_op_msg_reply(response_to:, doc:)
+    # Build a reply appropriate for the original request opcode.
+    # For legacy OP_QUERY requests we must send OP_REPLY (opcode 1).
+    # For OP_MSG requests send OP_MSG (opcode 2013).
+    def build_op_msg_reply(response_to:, doc:, request_opcode: nil)
       doc_bin = Codec.bson_encode(doc)
-      body = +""
-      body << Codec.pack_i32_le(0)
-      body << [0].pack('C')
-      body << doc_bin
-      len = 16 + body.bytesize
-      header = Codec.pack_header(len, next_request_id, response_to, Codec::OP_MSG)
-      header + body
+
+      if request_opcode == Codec::OP_QUERY
+        # OP_REPLY structure: int32 responseFlags, int64 cursorID, int32 startingFrom, int32 numberReturned, document(s)
+        body = +""
+        body << Codec.pack_i32_le(0)                    # responseFlags
+        body << [0].pack('q<')                          # cursorID (int64)
+        body << Codec.pack_i32_le(0)                    # startingFrom
+        body << Codec.pack_i32_le(1)                    # numberReturned
+        body << doc_bin
+        len = 16 + body.bytesize
+        header = Codec.pack_header(len, next_request_id, response_to, 1) # OP_REPLY opcode == 1
+        header + body
+      else
+        # OP_MSG style reply
+        body = +""
+        body << Codec.pack_i32_le(0)
+        body << [0].pack('C')
+        body << doc_bin
+        len = 16 + body.bytesize
+        header = Codec.pack_header(len, next_request_id, response_to, Codec::OP_MSG)
+        header + body
+      end
     end
 
     def next_request_id
